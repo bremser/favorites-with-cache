@@ -59,6 +59,55 @@ Favorites.Utilities = function()
 		return thumbnail_url;
 	}
 }
+
+/**
+* Cache Methods
+*/
+Favorites.Cache = function() {
+	var plugin = this;
+
+	plugin.ttl = 3600000; // 1hr cache TTL
+	
+	plugin.set = function(key, data) {
+		const item = {
+			data: data,
+			expiry: Date.now() + plugin.ttl
+		};
+		try {
+			localStorage.setItem('favorites_' + key, JSON.stringify(item));
+			return true;
+		} catch (e) {
+			console.warn('Favorites: Cache write failed', e);
+			return false;
+		}
+	};
+
+	plugin.get = function(key) {
+		try {
+			const item = localStorage.getItem('favorites_' + key);
+			if (!item) return null;
+
+			const parsed = JSON.parse(item);
+			if (Date.now() > parsed.expiry) {
+				localStorage.removeItem('favorites_' + key);
+				return null;
+			}
+			return parsed.data;
+		} catch (e) {
+			console.warn('Favorites: Cache read failed', e);
+			return null;
+		}
+	};
+
+	plugin.invalidate = function(key) {
+		try {
+			localStorage.removeItem('favorites_' + key);
+		} catch (e) {
+			console.warn('Favorites: Cache invalidation failed', e);
+		}
+	};
+};
+
 /**
 * Formatting functionality
 */
@@ -228,9 +277,26 @@ Favorites.UserFavorites = function()
 	*/
 	plugin.getFavorites = function()
 	{
+		var cache = new Favorites.Cache();
+		var cached = cache.get('user_favorites');
+		
+		if (cached) {
+			if ( Favorites.jsData.dev_mode ) {
+				console.log('✅ Retrieved favorites from cache:', cached);
+			}
+			Favorites.userFavorites = cached;
+			$(document).trigger('favorites-user-favorites-loaded', [cached, plugin.initialLoad]);
+			$(document).trigger('favorites-update-all-buttons');
+			return;
+		}
+	
+		if ( Favorites.jsData.dev_mode ) {
+			console.log('❌ No cached favorites found, fetching from server...');
+		}
+	
 		$.ajax({
 			url: Favorites.jsData.ajaxurl,
-			type: 'POST',
+			type: 'POST', 
 			datatype: 'json',
 			data: {
 				action : Favorites.formActions.favoritesarray
@@ -240,10 +306,16 @@ Favorites.UserFavorites = function()
 					console.log('The current user favorites were successfully loaded.');
 					console.log(data);
 				}
+				if (data.favorites) {
+					cache.set('user_favorites', data.favorites);
+					if ( Favorites.jsData.dev_mode ) {
+						console.log('💾 Saved favorites to cache:', data.favorites);
+					}
+				}
 				Favorites.userFavorites = data.favorites;
 				$(document).trigger('favorites-user-favorites-loaded', [data.favorites, plugin.initialLoad]);
 				$(document).trigger('favorites-update-all-buttons');
-
+	
 				// Deprecated Callback
 				if ( plugin.initialLoad ) favorites_after_initial_load(Favorites.userFavorites);
 			},
@@ -296,6 +368,8 @@ Favorites.Clear = function()
 	{
 		plugin.loading(true);
 		var site_id = $(plugin.activeButton).attr('data-siteid');
+		var cache = new Favorites.Cache();
+		
 		$.ajax({
 			url: Favorites.jsData.ajaxurl,
 			type: 'post',
@@ -305,7 +379,10 @@ Favorites.Clear = function()
 				siteid : site_id
 			},
 			success : function(data){
-				if ( Favorites.jsData.dev_mode ){
+				// Invalidate cache on successful clear
+				cache.invalidate('user_favorites');
+				if ( Favorites.jsData.dev_mode ) {
+					console.log('🗑️ Cache invalidated due to favorites clear');
 					console.log('Favorites list successfully cleared.');
 					console.log(data);
 				}
@@ -552,6 +629,7 @@ Favorites.Button = function()
 	{
 		plugin.loading(true);
 		plugin.setData();
+		var cache = new Favorites.Cache();
 		var formData = {
 			action : Favorites.formActions.favorite,
 			postid : plugin.data.post_id,
@@ -568,6 +646,11 @@ Favorites.Button = function()
 				if ( Favorites.jsData.dev_mode ) {
 					console.log('The favorite was successfully saved.');
 					console.log(data);
+				}
+				// Invalidate cache on successful update
+				cache.invalidate('user_favorites');
+				if ( Favorites.jsData.dev_mode ) {
+					console.log('🗑️ Cache invalidated due to favorite update');
 				}
 				if ( data.status === 'unauthenticated' ){
 					Favorites.authenticated = false;
@@ -587,7 +670,7 @@ Favorites.Button = function()
 				plugin.resetButtons();
 				$(document).trigger('favorites-updated-single', [data.favorites, plugin.data.post_id, plugin.data.site_id, plugin.data.status]);
 				$(document).trigger('favorites-update-all-buttons');
-
+	
 				// Deprecated callback
 				favorites_after_button_submit(data.favorites, plugin.data.post_id, plugin.data.site_id, plugin.data.status);
 			},
